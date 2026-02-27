@@ -9,3 +9,10 @@ pixi s
 ```
 
 ## 2. Run transformer
+
+
+
+# References
+- https://github.com/karpathy/nanoGPT
+- https://github.com/karpathy/llm.c
+- https://github.com/karpathy/nanochat
