@@ -1,6 +1,20 @@
+import math
+from dataclasses import dataclass
+
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+
+@dataclass
+class TransformerConfig:
+    vocab_size: int = 50257
+    max_seq_len: int = 1024
+    d_model: int = 512
+    num_heads: int = 8
+    num_layers: int = 6
+    d_ff: int = 2048
+    dropout: float = 0.1
 
 class SelfAttention(nn.Module):
     def __init__(self, d_model=512, num_heads=8):
@@ -71,3 +85,67 @@ class Decoder(nn.Module):
         x = self.norm2(x + self.dropout2(ffn_out))
         
         return x
+
+
+class Transformer(nn.Module):
+    def __init__(self, config: TransformerConfig):
+        super().__init__()
+        self.config = config
+
+        self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
+        self.register_buffer(
+            "positional_encoding", self._sinusoidal_encoding(config.max_seq_len, config.d_model)
+        )
+        self.dropout = nn.Dropout(config.dropout)
+
+        self.layers = nn.ModuleList(
+            [
+                Decoder(config.d_model, config.num_heads, config.d_ff, config.dropout)
+                for _ in range(config.num_layers)
+            ]
+        )
+
+        self.norm = nn.LayerNorm(config.d_model)
+        self.output_proj = nn.Linear(config.d_model, config.vocab_size, bias=False)
+
+        # Weight tying between token embedding and output projection
+        self.output_proj.weight = self.token_embedding.weight
+
+    @staticmethod
+    def _sinusoidal_encoding(max_seq_len: int, d_model: int) -> torch.Tensor:
+        """Pre-compute the sinusoidal positional encodings (Vaswani et al., 2017)."""
+        pe = torch.zeros(max_seq_len, d_model)
+        position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, dtype=torch.float) * (-math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe.unsqueeze(0)  # (1, max_seq_len, d_model)
+
+    @staticmethod
+    def _causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
+        """Generate a causal (lower-triangular) attention mask."""
+        return torch.tril(torch.ones(seq_len, seq_len, device=device)).unsqueeze(0).unsqueeze(0)
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input_ids: (batch_size, seq_len) token indices.
+        Returns:
+            logits: (batch_size, seq_len, vocab_size) raw predictions.
+        """
+        seq_len = input_ids.size(1)
+
+        x = self.token_embedding(input_ids) * math.sqrt(self.config.d_model)
+        x = x + self.positional_encoding[:, :seq_len, :]
+        x = self.dropout(x)
+
+        mask = self._causal_mask(seq_len, x.device)
+
+        for layer in self.layers:
+            x = layer(x, tgt_mask=mask)
+
+        x = self.norm(x)
+        logits = self.output_proj(x)
+        return logits
